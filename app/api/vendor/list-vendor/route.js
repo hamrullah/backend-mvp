@@ -1,18 +1,34 @@
+// app/api/vendor/list-vendor/route.js
 import { NextResponse } from "next/server";
 import jwt from "jsonwebtoken";
 import prisma from "@/lib/prisma";
 
-// ====== CORS ======
-const ORIGIN = "http://localhost:3001"; // origin FE kamu
-const corsHeaders = {
-  "Access-Control-Allow-Origin": ORIGIN,
-  "Access-Control-Allow-Methods": "GET,OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type, Authorization",
-  "Access-Control-Allow-Credentials": "true",
-};
+// ---------- CORS (whitelist & reflect) ----------
+const ALLOWLIST = [
+  process.env.FRONTEND_ORIGIN,        // ex: https://frontend-mvp-phi.vercel.app
+  process.env.FRONTEND_ORIGIN_LOCAL,  // ex: http://localhost:3001 (dev)
+].filter(Boolean);
 
-export async function OPTIONS() {
-  return new NextResponse(null, { status: 204, headers: corsHeaders });
+function buildCors(req) {
+  const origin = req.headers.get("origin");
+  const allow = ALLOWLIST.includes(origin) ? origin : (ALLOWLIST[0] || "*");
+
+  const headers = new Headers({
+    "Access-Control-Allow-Origin": allow,
+    "Access-Control-Allow-Methods": "GET,OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type, Authorization",
+    "Access-Control-Max-Age": "86400",
+    "Vary": "Origin",
+    "Content-Type": "application/json",
+  });
+
+  // hanya aktifkan credentials bila bukan "*"
+  if (allow !== "*") headers.set("Access-Control-Allow-Credentials", "true");
+  return headers;
+}
+
+export async function OPTIONS(req) {
+  return new NextResponse(null, { status: 204, headers: buildCors(req) });
 }
 
 function getTokenFromRequest(req) {
@@ -26,40 +42,44 @@ function getTokenFromRequest(req) {
   return null;
 }
 
-// ====== LIST VENDOR ======
+// ---------- LIST VENDOR ----------
 export async function GET(req) {
+  const cors = buildCors(req);
   try {
-    // ---- Auth (Bearer) ----
+    // Auth (Bearer/Cookie)
     const token = getTokenFromRequest(req);
     if (!token) {
-      return new NextResponse(JSON.stringify({ error: "Unauthorized" }), {
-        status: 401,
-        headers: corsHeaders,
-      });
+      return new NextResponse(JSON.stringify({ error: "Unauthorized" }), { status: 401, headers: cors });
     }
-    let payload;
     try {
-      payload = jwt.verify(token, process.env.NEXTAUTH_SECRET);
+      jwt.verify(token, process.env.NEXTAUTH_SECRET);
     } catch {
-      return new NextResponse(JSON.stringify({ error: "Invalid token" }), {
-        status: 401,
-        headers: corsHeaders,
-      });
+      return new NextResponse(JSON.stringify({ error: "Invalid token" }), { status: 401, headers: cors });
     }
-    // (opsional) batasi role:
-    // if ((payload.role || "").toUpperCase() !== "ADMIN") {
-    //   return new NextResponse(JSON.stringify({ error: "Forbidden" }), { status: 403, headers: corsHeaders });
-    // }
 
-    // ---- Query params ----
+    // Query params
     const { searchParams } = new URL(req.url);
     const limit = Math.min(100, Math.max(1, parseInt(searchParams.get("limit") ?? "10", 10)));
     const offset = Math.max(0, parseInt(searchParams.get("offset") ?? "0", 10));
     const q = (searchParams.get("q") || "").trim();
     const statusParam = searchParams.get("status");
-    const sortBy = searchParams.get("sortBy") || "created_at";
-    const sortDir = searchParams.get("sortDir") === "asc" ? "asc" : "desc";
 
+    // sort whitelist → field prisma
+    const allowSortBy = new Set(["created_at", "updated_at", "name", "email", "city", "province", "status"]);
+    const sortKeyMap = {
+      created_at: "created_at",
+      updated_at: "updated_at",
+      name: "name",
+      email: "email",
+      city: "city",
+      province: "province",
+      status: "status",
+    };
+    const sortByRaw = searchParams.get("sortBy") || "created_at";
+    const sortBy = allowSortBy.has(sortByRaw) ? sortByRaw : "created_at";
+    const sortDir = (searchParams.get("sortDir") || "desc").toLowerCase() === "asc" ? "asc" : "desc";
+
+    // where
     const where = {};
     if (q) {
       where.OR = [
@@ -74,13 +94,11 @@ export async function GET(req) {
       where.status = Number(statusParam);
     }
 
-    // ⚠️ Pastikan nama model prisma sesuai schema kamu.
-    // Kalau model-nya `model ms_vendor { ... }` maka pakai `prisma.ms_vendor`.
-    // Jika model kamu bernama `Vendor`, ganti ke `prisma.vendor`.
+    // Query
     const [rows, total] = await Promise.all([
       prisma.ms_vendor.findMany({
         where,
-        orderBy: { [sortBy]: sortDir },
+        orderBy: { [sortKeyMap[sortBy]]: sortDir },
         take: limit,
         skip: offset,
         select: {
@@ -117,13 +135,19 @@ export async function GET(req) {
         message: "Vendor list",
         pagination: { total, limit, offset },
         vendors,
+        // bentuk tambahan agar seragam dengan komponen lain:
+        page: Math.floor(offset / (limit || 1)) + 1,
+        pageSize: limit,
+        total,
+        totalPages: Math.max(1, Math.ceil(total / (limit || 1))),
+        data: vendors,
       }),
-      { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      { status: 200, headers: cors }
     );
   } catch (err) {
     return new NextResponse(JSON.stringify({ error: err?.message ?? "Internal server error" }), {
       status: 500,
-      headers: corsHeaders,
+      headers: cors,
     });
   }
 }
