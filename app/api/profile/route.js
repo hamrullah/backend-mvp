@@ -3,7 +3,7 @@ import { NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
 import jwt from "jsonwebtoken";
 
-const ORIGIN = "http://localhost:3001"; // ganti sesuai FE
+const ORIGIN = "https://backend-mvp-nine.vercel.app"; // ganti sesuai FE
 const corsHeaders = {
   "Access-Control-Allow-Origin": ORIGIN,
   "Access-Control-Allow-Methods": "GET,OPTIONS",

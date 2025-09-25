@@ -4,7 +4,7 @@ import prisma from "@/lib/prisma";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 
-const ORIGIN = process.env.APP_ORIGIN || "http://localhost:3001";
+const ORIGIN = process.env.APP_ORIGIN || "https://backend-mvp-nine.vercel.app";
 const cors = {
   "Access-Control-Allow-Origin": ORIGIN,
   "Access-Control-Allow-Methods": "POST,OPTIONS",
