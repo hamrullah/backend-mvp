@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 
 // const ALLOWED = ["http://localhost:3001"];
-const ALLOWED = ["https://frontend-mvp-phi.vercel.app/", "http://localhost:3001"];
+const ALLOWED = ["https://frontend-mvp-phi.vercel.app", "http://localhost:3001"];
 
 export function middleware(req) {
   const origin = req.headers.get("origin");
