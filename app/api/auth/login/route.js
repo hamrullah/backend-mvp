@@ -54,6 +54,7 @@ export async function POST(req) {
         { status: 400, headers: corsHeaders }
       );
     }
+    
 
     const user = await prisma.users.findFirst({
       where: { email },
