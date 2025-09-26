@@ -124,7 +124,7 @@ export async function POST(req) {
           name: name_member,
           email,
           password_hash,
-          role_id: MEMBER_ROLE_ID, // sesuaikan bila mapping role berbeda
+          role_id: 7, // sesuaikan bila mapping role berbeda
           status: 1,
         },
         select: { id: true, name: true, email: true, role_id: true },
