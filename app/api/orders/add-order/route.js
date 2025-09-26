@@ -1,122 +1,144 @@
-import prisma from "@/lib/prisma"
-import jwt from "jsonwebtoken"
-import { customAlphabet } from "nanoid"
+// app/api/orders/route.js  (atau .../add-order/route.js)
+import prisma from "@/lib/prisma";
+import jwt from "jsonwebtoken";
+import { customAlphabet } from "nanoid";
 
-const nanoid = customAlphabet("ABCDEFGHJKLMNPQRSTUVWXYZ23456789", 8)
+const nanoid = customAlphabet("ABCDEFGHJKLMNPQRSTUVWXYZ23456789", 8);
 
-// ---------- CORS ----------
-function corsHeaders() {
-  return {
-    "Access-Control-Allow-Origin": "*", // ganti ke domain frontend untuk prod
-    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+// ===== CORS (reflect allowlist) =====
+const ALLOWLIST = [
+  process.env.FRONTEND_ORIGIN,        // ex: https://frontend-mvp-phi.vercel.app
+  process.env.FRONTEND_ORIGIN_LOCAL,  // ex: http://localhost:3001
+  "http://localhost:3001",            // fallback dev
+].filter(Boolean);
+
+function buildCors(req) {
+  const origin = req.headers.get("origin");
+  const allow = ALLOWLIST.includes(origin) ? origin : (ALLOWLIST[0] || "*");
+  const headers = new Headers({
+    "Access-Control-Allow-Origin": allow,
+    "Access-Control-Allow-Methods": "POST,OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type, Authorization",
-  }
+    "Access-Control-Max-Age": "86400",
+    "Vary": "Origin",
+    "Content-Type": "application/json",
+  });
+  if (allow !== "*") headers.set("Access-Control-Allow-Credentials", "true");
+  return headers;
 }
 
-export async function OPTIONS() {
-  return new Response(null, { status: 204, headers: corsHeaders() })
+export async function OPTIONS(req) {
+  return new Response(null, { status: 204, headers: buildCors(req) });
 }
 
-// ---------- POST /api/orders ----------
+// ===== helpers =====
+function getBearer(req) {
+  const h = req.headers.get("authorization") || req.headers.get("Authorization");
+  if (h && h.toLowerCase().startsWith("bearer ")) return h.slice(7);
+  return null;
+}
+
 export async function POST(req) {
+  const cors = buildCors(req);
   try {
-    // --- Auth (Customer only)
-    const authHeader = req.headers.get("authorization")
-    if (!authHeader || !authHeader.startsWith("Bearer ")) {
-      return new Response(JSON.stringify({ error: "Unauthorized" }), {
-        status: 401, headers: corsHeaders(),
-      })
+    // --- Auth (boleh siapa pun yg punya token; kamu bisa batasi role kalau perlu)
+    const token = getBearer(req);
+    if (!token) {
+      return new Response(JSON.stringify({ error: "Unauthorized" }), { status: 401, headers: cors });
     }
-
-    let decoded
     try {
-      decoded = jwt.verify(authHeader.split(" ")[1], process.env.NEXTAUTH_SECRET)
+      jwt.verify(token, process.env.NEXTAUTH_SECRET);
     } catch {
-      return new Response(JSON.stringify({ error: "Invalid token" }), {
-        status: 401, headers: corsHeaders(),
-      })
+      return new Response(JSON.stringify({ error: "Invalid token" }), { status: 401, headers: cors });
     }
-
-    // if (decoded.role !== "Customer") {
-    //   return new Response(JSON.stringify({ error: "Forbidden: Customer only" }), {
-    //     status: 403, headers: corsHeaders(),
-    //   })
-    // }
 
     // --- Payload
-    const body = await req.json().catch(() => ({}))
-    const member_id = Number(body.member_id)
-    const payment_methode = String(body.payment_methode || "Manual")
-    const status = Number.isInteger(body.status) ? Number(body.status) : 0 // default Pending
-    const flag = Number.isInteger(body.flag) ? Number(body.flag) : 1
-    const items = Array.isArray(body.items) ? body.items : []
+    let body;
+    try {
+      body = await req.json();
+    } catch {
+      return new Response(JSON.stringify({ error: "Invalid JSON body" }), { status: 400, headers: cors });
+    }
+
+    const member_id = Number(body.member_id);
+    const payment_methode = String(body.payment_methode || "Manual");
+    const status = Number.isInteger(body.status) ? Number(body.status) : 0; // 0=Pending
+    const flag = Number.isInteger(body.flag) ? Number(body.flag) : 1;
+    const items = Array.isArray(body.items) ? body.items : [];
 
     if (!member_id) {
-      return new Response(JSON.stringify({ error: "member_id is required" }), {
-        status: 400, headers: corsHeaders(),
-      })
+      return new Response(JSON.stringify({ error: "member_id is required" }), { status: 400, headers: cors });
     }
     if (!items.length) {
-      return new Response(JSON.stringify({ error: "Items are required" }), {
-        status: 400, headers: corsHeaders(),
-      })
+      return new Response(JSON.stringify({ error: "Items are required" }), { status: 400, headers: cors });
     }
 
-    // --- Validasi & siapkan detail
-    let totalAmount = 0
-    const detailData = []
+    // optional: pastikan member ada
+    const member = await prisma.ms_member.findUnique({ where: { id: member_id }, select: { id: true }});
+    if (!member) {
+      return new Response(JSON.stringify({ error: "Member not found" }), { status: 404, headers: cors });
+    }
+
+    // --- validasi item + siapkan detail
+    // catatan: kita hormati harga dari body; kalau kosong, fallback ke harga voucher di DB
+    let totalAmount = 0;
+    const detailData = [];
 
     for (let i = 0; i < items.length; i++) {
-      const it = items[i]
-      const voucher_id = Number(it.voucher_id)
-      const qty = Number(it.qty)
-      const price = Number(it.price)
+      const it = items[i];
+      const voucher_id = Number(it.voucher_id);
+      const qty = Number(it.qty);
+      let price = it.price != null ? Number(it.price) : NaN;
 
       if (!Number.isInteger(voucher_id) || voucher_id <= 0) {
-        return new Response(JSON.stringify({ error: `items[${i}].voucher_id invalid` }), {
-          status: 400, headers: corsHeaders(),
-        })
+        return new Response(JSON.stringify({ error: `items[${i}].voucher_id invalid` }), { status: 400, headers: cors });
       }
       if (!Number.isInteger(qty) || qty <= 0) {
-        return new Response(JSON.stringify({ error: `items[${i}].qty must be integer > 0` }), {
-          status: 400, headers: corsHeaders(),
-        })
-      }
-      if (!Number.isFinite(price) || price < 0) {
-        return new Response(JSON.stringify({ error: `items[${i}].price must be >= 0` }), {
-          status: 400, headers: corsHeaders(),
-        })
+        return new Response(JSON.stringify({ error: `items[${i}].qty must be integer > 0` }), { status: 400, headers: cors });
       }
 
-      const sub = price * qty
-      totalAmount += sub
+      // fallback harga dari DB kalau price tidak valid
+      if (!Number.isFinite(price) || price < 0) {
+        const v = await prisma.ms_vouchers.findUnique({
+          where: { id: voucher_id },
+          select: { price: true },
+        });
+        if (!v) {
+          return new Response(JSON.stringify({ error: `Voucher ${voucher_id} not found` }), { status: 404, headers: cors });
+        }
+        price = Number(v.price);
+      }
+
+      const sub = price * qty;
+      totalAmount += sub;
 
       detailData.push({
         voucher_id,
         qty,
-        price: String(price.toFixed(2)),      // Decimal → string saat write
-        sub_total: String(sub.toFixed(2)),
+        price: price.toFixed(2),        // Decimal write as string
+        sub_total: sub.toFixed(2),
         status: 1,
         flag: 1,
-      })
+      });
     }
 
-    // --- Transaksi: header + detail
+    // --- transaksi order + detail
     const created = await prisma.$transaction(async (tx) => {
-      const code = `TRX-${nanoid()}`
+      const code = `TRX-${nanoid()}`;
 
       const order = await tx.trx_orders.create({
         data: {
           code_trx: code,
           member_id,
-          totalAmount: String(totalAmount.toFixed(2)),
+          totalAmount: totalAmount.toFixed(2),
           payment_methode,
           status,
           flag,
           date_order: new Date(),
           items: { create: detailData },
         },
-      })
+        select: { id: true },
+      });
 
       return tx.trx_orders.findUnique({
         where: { id: order.id },
@@ -130,11 +152,11 @@ export async function POST(req) {
             },
           },
         },
-      })
-    })
+      });
+    });
 
-    // --- Response format sama dengan GET /api/orders
-    const response = {
+    // --- shape response buat FE
+    const data = {
       id: created.id,
       code_trx: created.code_trx,
       member_id: created.member_id,
@@ -171,15 +193,16 @@ export async function POST(req) {
             }
           : null,
       })),
-    }
+    };
 
-    return new Response(JSON.stringify({ message: "Order created", data: response }), {
+    return new Response(JSON.stringify({ message: "Order created", data }), {
       status: 201,
-      headers: { "Content-Type": "application/json", ...corsHeaders() },
-    })
+      headers: cors,
+    });
   } catch (err) {
-    return new Response(JSON.stringify({ error: err.message }), {
-      status: 500, headers: corsHeaders(),
-    })
+    return new Response(JSON.stringify({ error: err?.message || "Internal server error" }), {
+      status: 500,
+      headers: cors,
+    });
   }
 }

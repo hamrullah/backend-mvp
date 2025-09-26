@@ -1,31 +1,53 @@
 // app/api/affiliate/register/route.js
-import prisma from "@/lib/prisma"
-import { customAlphabet } from "nanoid"
-import bcrypt from "bcryptjs"
+import prisma from "@/lib/prisma";
+import { customAlphabet } from "nanoid";
+import bcrypt from "bcryptjs";
 
-// ===== CORS =====
-const cors = {
-  "Access-Control-Allow-Origin": "*", // ganti ke origin FE di prod
-  "Access-Control-Allow-Methods": "POST, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type, Authorization",
+// ===== CORS (allowlist & reflect Origin) =====
+const ALLOWLIST = [
+  process.env.FRONTEND_ORIGIN,        // e.g. https://frontend-mvp-phi.vercel.app
+  process.env.FRONTEND_ORIGIN_LOCAL,  // e.g. http://localhost:3001
+  "http://localhost:3001",
+].filter(Boolean);
+
+function buildCors(req) {
+  const origin = req.headers.get("origin") || "";
+  const allow = ALLOWLIST.includes(origin) ? origin : (ALLOWLIST[0] || "*");
+  const headers = new Headers({
+    "Access-Control-Allow-Origin": allow,
+    "Access-Control-Allow-Methods": "POST,OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type, Authorization",
+    "Access-Control-Max-Age": "86400",
+    "Vary": "Origin",
+    "Content-Type": "application/json",
+  });
+  if (allow !== "*") headers.set("Access-Control-Allow-Credentials", "true");
+  return headers;
 }
-export async function OPTIONS() {
-  return new Response(null, { status: 204, headers: cors })
+
+export async function OPTIONS(req) {
+  return new Response(null, { status: 204, headers: buildCors(req) });
 }
 
 // ===== Utils =====
-const nano = customAlphabet("ABCDEFGHJKLMNPQRSTUVWXYZ23456789", 6)
-const genAffiliateCode = () => `AF-${nano()}`
-const genReferral = () => `REF${nano()}`
-const isEmail = (s) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(s || "").trim())
+const nano = customAlphabet("ABCDEFGHJKLMNPQRSTUVWXYZ23456789", 6);
+const genAffiliateCode = () => `AF-${nano()}`;
+const genReferral = () => `REF${nano()}`;
+const isEmail = (s) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(s || "").trim());
 
 export async function POST(req) {
+  const cors = buildCors(req);
   try {
-    const body = await req.json()
+    let body;
+    try {
+      body = await req.json();
+    } catch {
+      return new Response(JSON.stringify({ error: "Invalid JSON body" }), { status: 400, headers: cors });
+    }
 
     const {
       name_affiliate,
-      email,
+      email: rawEmail,
       address = "",
       city = "",
       province = "",
@@ -34,63 +56,58 @@ export async function POST(req) {
       twitter = null,
       instagram = null,
       tiktok = null,
-      referral_code,       // opsional; kalau tidak ada akan digenerate
-      code_affiliate,      // opsional; kalau tidak ada akan digenerate
-      status = 1,          // default aktif
+      referral_code,      // optional; auto-generate if missing
+      code_affiliate,     // optional; auto-generate if missing
+      status = 1,
       flag = 1,
-    } = body || {}
+    } = body || {};
 
     // ---- validation
+    const email = String(rawEmail || "").trim().toLowerCase();
     if (!name_affiliate || !String(name_affiliate).trim()) {
-      return Response.json({ error: "name_affiliate wajib diisi" }, { status: 400, headers: cors })
+      return new Response(JSON.stringify({ error: "name_affiliate wajib diisi" }), { status: 400, headers: cors });
     }
     if (!email || !isEmail(email)) {
-      return Response.json({ error: "email wajib dan harus valid" }, { status: 400, headers: cors })
+      return new Response(JSON.stringify({ error: "email wajib dan harus valid" }), { status: 400, headers: cors });
     }
 
-    // Cek duplikasi email (users & ms_affiliate)
+    // Cek duplikasi email (users & ms_affiliate) — gunakan findFirst untuk aman
     const [userExist, affExist] = await Promise.all([
-      prisma.users.findUnique({ where: { email } }),
-      prisma.ms_affiliate.findUnique({ where: { email } }),
-    ])
+      prisma.users.findUnique({ where: { email } }),           // diasumsikan email unique di users
+      prisma.ms_affiliate.findFirst({ where: { email } }),      // pakai findFirst (email mungkin tidak unique di schema)
+    ]);
     if (userExist || affExist) {
-      return Response.json({ error: "Email sudah terdaftar" }, { status: 409, headers: cors })
+      return new Response(JSON.stringify({ error: "Email sudah terdaftar" }), { status: 409, headers: cors });
     }
 
     // Persiapan data
-    const passwordHash = await bcrypt.hash("12345", 10)
-    let code = code_affiliate || genAffiliateCode()
-    let ref = referral_code || genReferral()
+    const passwordHash = await bcrypt.hash("12345", 10);
+    let code = (code_affiliate || "").trim() || genAffiliateCode();
+    let ref  = (referral_code || "").trim()  || genReferral();
 
-    // Jaga2 collision unik untuk code/referral (jarang, tapi aman)
-    // regenerate sampai unik (maks 5x)
+    // Jaga2 collision unik untuk code/referral
     for (let i = 0; i < 5; i++) {
-      // cek pair secara paralel
-      // NB: gunakan findFirst + OR kecil agar hemat roundtrip
-      //   - code_affiliate unik
-      //   - referral_code unik
-      //   - email sudah dicek di atas
       const [codeClash, refClash] = await Promise.all([
         prisma.ms_affiliate.findFirst({ where: { code_affiliate: code } }),
         prisma.ms_affiliate.findFirst({ where: { referral_code: ref } }),
-      ])
-      if (!codeClash && !refClash) break
-      if (codeClash) code = genAffiliateCode()
-      if (refClash) ref = genReferral()
+      ]);
+      if (!codeClash && !refClash) break;
+      if (codeClash) code = genAffiliateCode();
+      if (refClash)  ref  = genReferral();
     }
+
+    // (opsional) fallback role via env
+    let roleId = null;
+    try {
+      const role = await prisma.ms_role.findFirst({
+        where: { OR: [{ code_role: "AFFILIATE" }, { name_role: "Affiliate" }] },
+        select: { id: true },
+      });
+      roleId = role?.id ?? (process.env.AFFILIATE_ROLE_ID ? Number(process.env.AFFILIATE_ROLE_ID) : null);
+    } catch { /* ignore */ }
 
     // ==== TRANSAKSI ====
     const created = await prisma.$transaction(async (tx) => {
-      // (opsional) ambil role Affiliate jika ada
-      let roleId = null
-      try {
-        const role = await tx.ms_role.findFirst({
-          where: { OR: [{ code_role: "AFFILIATE" }, { name_role: "Affiliate" }] },
-          select: { id: true },
-        })
-        roleId = role?.id ?? null
-      } catch (_) {}
-
       // 1) create user
       const user = await tx.users.create({
         data: {
@@ -101,7 +118,7 @@ export async function POST(req) {
           status: 1,
         },
         select: { id: true, name: true, email: true },
-      })
+      });
 
       // 2) create affiliate
       const aff = await tx.ms_affiliate.create({
@@ -142,33 +159,28 @@ export async function POST(req) {
           updated_at: true,
           referral_code: true,
         },
-      })
+      });
 
-      return { user, affiliate: aff }
-    })
+      return { user, affiliate: aff };
+    });
 
     return new Response(
       JSON.stringify({
         message: "Affiliate registered",
         password_note: "Default password adalah 12345. Harap diganti setelah login.",
-        data: {
-          ...created.affiliate,
-          user: created.user,
-        },
+        data: { ...created.affiliate, user: created.user },
       }),
-      { status: 201, headers: { "Content-Type": "application/json", ...cors } },
-    )
+      { status: 201, headers: cors }
+    );
   } catch (err) {
     // Prisma unique error
     if (err?.code === "P2002") {
       return new Response(JSON.stringify({ error: "Data unik sudah ada (email/kode/referral)" }), {
-        status: 409,
-        headers: cors,
-      })
+        status: 409, headers: buildCors(req),
+      });
     }
-    return new Response(JSON.stringify({ error: err.message || "Internal error" }), {
-      status: 500,
-      headers: cors,
-    })
+    return new Response(JSON.stringify({ error: err?.message || "Internal error" }), {
+      status: 500, headers: buildCors(req),
+    });
   }
 }

@@ -1,3 +1,4 @@
+// app/api/voucher/add-voucher/route.js
 import { NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
 import jwt from "jsonwebtoken";
@@ -5,13 +6,30 @@ import { randomUUID } from "crypto";
 import { promises as fs } from "fs";
 import path from "path";
 
-const ORIGIN = process.env.FRONTEND_ORIGIN || "http://localhost:3001";
-const corsHeaders = {
-  "Access-Control-Allow-Origin": ORIGIN,
-  "Access-Control-Allow-Methods": "POST,OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type, Authorization",
-  "Access-Control-Allow-Credentials": "true",
-};
+// ===== CORS (reflect allowlist) =====
+const ALLOWLIST = [
+  process.env.FRONTEND_ORIGIN,        // ex: https://frontend-mvp-phi.vercel.app
+  process.env.FRONTEND_ORIGIN_LOCAL,  // ex: http://localhost:3001
+].filter(Boolean);
+
+function buildCors(req) {
+  const origin = req.headers.get("origin");
+  const allow = ALLOWLIST.includes(origin) ? origin : (ALLOWLIST[0] || "*");
+  const headers = new Headers({
+    "Access-Control-Allow-Origin": allow,
+    "Access-Control-Allow-Methods": "POST,OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type, Authorization",
+    "Access-Control-Max-Age": "86400",
+    "Vary": "Origin",
+    "Content-Type": "application/json",
+  });
+  if (allow !== "*") headers.set("Access-Control-Allow-Credentials", "true");
+  return headers;
+}
+
+export async function OPTIONS(req) {
+  return new NextResponse(null, { status: 204, headers: buildCors(req) });
+}
 
 // ---------- helpers ----------
 function getToken(req) {
@@ -26,33 +44,27 @@ function getToken(req) {
 }
 
 async function ensureDir(dir) {
-  try {
-    await fs.mkdir(dir, { recursive: true });
-  } catch (_) {}
+  try { await fs.mkdir(dir, { recursive: true }); } catch {}
 }
 
-function asInt(v, d = 0) {
+const asInt = (v, d = 0) => {
   const n = parseInt(v, 10);
   return Number.isFinite(n) ? n : d;
-}
-function asDecimalString(v, d = "0") {
+};
+const asDecimalString = (v, d = "0") => {
   if (v === undefined || v === null || v === "") return d;
   const n = Number(v);
   return Number.isFinite(n) ? n.toFixed(2) : d;
-}
-
-export async function OPTIONS() {
-  return new NextResponse(null, { status: 204, headers: corsHeaders });
-}
+};
 
 export async function POST(req) {
+  const cors = buildCors(req);
   try {
-    // ---- auth (optional: perketat role vendor/admin) ----
+    // ---- auth ----
     const token = getToken(req);
     if (!token) {
       return new NextResponse(JSON.stringify({ error: "Unauthorized" }), {
-        status: 401,
-        headers: corsHeaders,
+        status: 401, headers: cors,
       });
     }
     let payload;
@@ -60,67 +72,63 @@ export async function POST(req) {
       payload = jwt.verify(token, process.env.NEXTAUTH_SECRET);
     } catch {
       return new NextResponse(JSON.stringify({ error: "Invalid token" }), {
-        status: 401,
-        headers: corsHeaders,
+        status: 401, headers: cors,
       });
     }
 
-    // Wajib multipart (agar bisa upload file)
-    const ctype = req.headers.get("content-type") || "";
-    if (!ctype.toLowerCase().includes("multipart/form-data")) {
+    // Wajib multipart
+    const ctype = (req.headers.get("content-type") || "").toLowerCase();
+    if (!ctype.includes("multipart/form-data")) {
       return new NextResponse(
         JSON.stringify({ error: "Content-Type must be multipart/form-data" }),
-        { status: 400, headers: corsHeaders }
+        { status: 400, headers: cors }
       );
     }
 
     const fd = await req.formData();
     const get = (k) => (fd.get(k)?.toString() ?? "").trim();
 
-    // --- ambil field utama (sesuaikan nama kolom db kamu) ---
+    // --- fields ---
     const title = get("title");
     const description = get("description");
     const code_voucher = get("code") || get("code_voucher") || "";
-    const vendor_id = asInt(get("vendor_id") || payload.vendor_id); // kalau vendor_id ada di token
+    const vendor_id = asInt(get("vendor_id") || payload.vendor_id);
     const category_voucher_id = asInt(get("category_voucher_id"));
     const inventory = asInt(get("inventory") || get("totalInventory") || 0);
     const price = asDecimalString(get("price") || "0");
     const weight = asDecimalString(get("weight") || "0");
     const dimension = get("dimension") || "";
-    const status = asInt(get("status") || 1); // 1=published?
-    const flag = asInt(get("flag") || 1);     // 1=aktif
+    const status = asInt(get("status") || 1);
+    const flag = asInt(get("flag") || 1);
     const voucher_start = get("startAt") || get("voucher_start");
     const voucher_end = get("endAt") || get("voucher_end");
 
     if (!title) {
       return new NextResponse(JSON.stringify({ error: "Title is required" }), {
-        status: 400,
-        headers: corsHeaders,
+        status: 400, headers: cors,
       });
     }
     if (!vendor_id) {
       return new NextResponse(JSON.stringify({ error: "vendor_id is required" }), {
-        status: 400,
-        headers: corsHeaders,
+        status: 400, headers: cors,
       });
     }
 
-    // --- simpan voucher utama ---
     const now = new Date();
 
-    // NOTE:
-    // Jika di schema Prisma kamu model-nya bernama `ms_vouchers`, pakai `prisma.ms_vouchers`.
-    // Kalau model kamu bernama `Voucher` (@@map("ms_vouchers")), ganti ke `prisma.voucher`.
+    // ⚠️ Pastikan nama model sesuai schema:
+    // - Jika model kamu `model ms_vouchers { ... }` => prisma.ms_vouchers
+    // - Jika `model Voucher @@map("ms_vouchers")` => prisma.voucher
     const voucher = await prisma.ms_vouchers.create({
       data: {
-        code_voucher : code_voucher || `VCH-${randomUUID()}`,
+        code_voucher: code_voucher || `VCH-${randomUUID()}`,
         vendor_id,
         category_voucher_id,
         title,
         description,
         inventory,
-        price,     // kirim string untuk kolom numeric/Decimal
-        weight,    // string juga
+        price,     // Prisma Decimal aman terima string
+        weight,
         dimension,
         status,
         flag,
@@ -134,17 +142,21 @@ export async function POST(req) {
       select: { id: true, title: true },
     });
 
-    // --- simpan file gambar (multiple) ---
-    const files = fd.getAll("images"); // name="images" multiple
+    // --- upload images (multiple) ---
+    const files = fd.getAll("images");
     const savedImages = [];
 
     if (files && files.length) {
-      const uploadDir = path.join(process.cwd(), "public", "uploads", "vouchers");
+      // NOTE (Vercel): filesystem runtime read-only. Untuk production,
+      // simpan ke Vercel Blob / S3 / Cloudinary.
+      // Jika tetap butuh local, gunakan '/tmp' (ephemeral) hanya untuk preview.
+      const baseDir =
+        process.env.NODE_ENV === "production" ? "/tmp" : path.join(process.cwd(), "public");
+      const uploadDir = path.join(baseDir, "uploads", "vouchers");
       await ensureDir(uploadDir);
 
       for (const file of files) {
         if (!(file instanceof File)) continue;
-        // basic guard
         if (file.size > 5 * 1024 * 1024) continue; // 5MB limit contoh
 
         const ext = path.extname(file.name || "").toLowerCase() || ".dat";
@@ -154,14 +166,16 @@ export async function POST(req) {
         const arrayBuffer = await file.arrayBuffer();
         await fs.writeFile(filepath, Buffer.from(arrayBuffer));
 
-        // path publik (served dari /public)
-        const publicUrl = `/uploads/vouchers/${filename}`;
+        // path publik:
+        const publicPath =
+          process.env.NODE_ENV === "production"
+            ? `/uploads/vouchers/${filename}` // kalau pakai /tmp, ini tidak persist di Vercel
+            : `/uploads/vouchers/${filename}`;
 
-        // simpan ke tabel ms_vouchers_image
         const imgRow = await prisma.ms_vouchers_image.create({
           data: {
             voucher_id: voucher.id,
-            image: publicUrl, // simpan path/URL
+            image: publicPath,
             flag: 1,
             created_at: now,
             updated_at: now,
@@ -176,18 +190,13 @@ export async function POST(req) {
     }
 
     return NextResponse.json(
-      {
-        message: "Voucher created",
-        voucher: { id: voucher.id, title: voucher.title },
-        images: savedImages,
-      },
-      { headers: corsHeaders }
+      { message: "Voucher created", voucher: { id: voucher.id, title: voucher.title }, images: savedImages },
+      { headers: cors }
     );
   } catch (err) {
     console.error(err);
-    return new NextResponse(
-      JSON.stringify({ error: err?.message ?? "Internal server error" }),
-      { status: 500, headers: corsHeaders }
-    );
+    return new NextResponse(JSON.stringify({ error: err?.message ?? "Internal server error" }), {
+      status: 500, headers: cors,
+    });
   }
 }

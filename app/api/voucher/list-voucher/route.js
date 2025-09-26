@@ -1,17 +1,31 @@
+// app/api/voucher/list-voucher/route.js
 import { NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
 import jwt from "jsonwebtoken";
 
-const ORIGIN = process.env.FRONTEND_ORIGIN || "http://localhost:3001";
-const corsHeaders = {
-  "Access-Control-Allow-Origin": ORIGIN,
-  "Access-Control-Allow-Methods": "GET,OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type, Authorization",
-  "Access-Control-Allow-Credentials": "true",
-};
+// ===== CORS: reflect allowlist =====
+const ALLOWLIST = [
+  process.env.FRONTEND_ORIGIN,        // ex: https://frontend-mvp-phi.vercel.app
+  process.env.FRONTEND_ORIGIN_LOCAL,  // ex: http://localhost:3001
+].filter(Boolean);
 
-export async function OPTIONS() {
-  return new NextResponse(null, { status: 204, headers: corsHeaders });
+function buildCors(req) {
+  const origin = req.headers.get("origin");
+  const allow = ALLOWLIST.includes(origin) ? origin : (ALLOWLIST[0] || "*");
+  const headers = new Headers({
+    "Access-Control-Allow-Origin": allow,
+    "Access-Control-Allow-Methods": "GET,OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type, Authorization",
+    "Access-Control-Max-Age": "86400",
+    "Vary": "Origin",
+    "Content-Type": "application/json",
+  });
+  if (allow !== "*") headers.set("Access-Control-Allow-Credentials", "true");
+  return headers;
+}
+
+export async function OPTIONS(req) {
+  return new NextResponse(null, { status: 204, headers: buildCors(req) });
 }
 
 // ---- helpers ----
@@ -52,31 +66,28 @@ function labelToWhere(label, now) {
 }
 
 export async function GET(req) {
+  const cors = buildCors(req);
   try {
     // --- auth ---
     const token = getToken(req);
     if (!token) {
       return new NextResponse(JSON.stringify({ error: "Unauthorized" }), {
         status: 401,
-        headers: corsHeaders,
+        headers: cors,
       });
     }
-    let payload;
     try {
-      payload = jwt.verify(token, process.env.NEXTAUTH_SECRET);
+      jwt.verify(token, process.env.NEXTAUTH_SECRET);
     } catch {
       return new NextResponse(JSON.stringify({ error: "Invalid token" }), {
         status: 401,
-        headers: corsHeaders,
+        headers: cors,
       });
     }
 
     // --- query params ---
     const url = new URL(req.url);
-    const limit = Math.min(
-      50,
-      Math.max(1, parseInt(url.searchParams.get("limit") || "10", 10))
-    );
+    const limit = Math.min(50, Math.max(1, parseInt(url.searchParams.get("limit") || "10", 10)));
     const offset = Math.max(0, parseInt(url.searchParams.get("offset") || "0", 10));
     const q = (url.searchParams.get("q") || "").trim();
     const statusLabel = url.searchParams.get("status"); // Published|Scheduled|Unlisted|Archived
@@ -84,7 +95,6 @@ export async function GET(req) {
 
     const now = new Date();
     const AND = [];
-
     if (q) {
       AND.push({
         OR: [
@@ -94,17 +104,12 @@ export async function GET(req) {
       });
     }
     if (vendorId) AND.push({ vendor_id: Number(vendorId) });
-
-    // contoh: kunci ke vendor milik user (sesuaikan payload token-mu)
-    // if (payload.role === "VENDOR" && payload.vendor_id) {
-    //   AND.push({ vendor_id: payload.vendor_id });
-    // }
-
     if (statusLabel) AND.push(labelToWhere(statusLabel, now));
     const where = AND.length ? { AND } : undefined;
 
-    // !!! PENTING: gunakan nama model Prisma yang benar !!!
-    // Jika model kamu bernama `Voucher` (dengan @@map("ms_vouchers")), ganti ke prisma.voucher.
+    // ⚠️ Pastikan nama model sesuai schema:
+    // - Jika model-nya `model ms_vouchers` -> prisma.ms_vouchers
+    // - Jika `model Voucher @@map("ms_vouchers")` -> prisma.voucher
     const model = prisma.ms_vouchers;
 
     const [rows, total] = await Promise.all([
@@ -135,33 +140,38 @@ export async function GET(req) {
       model.count({ where }),
     ]);
 
-    // map ke shape FE
-    const vouchers = rows.map((v) => ({
-      id: v.id,
-      code: v.code_voucher,
-      title: v.title,
-      description: v.description,
-      vendor_id: v.vendor_id,
-      category_voucher_id: v.category_voucher_id,
-      inventory: v.inventory,
-      price: Number(v.price), // Prisma Decimal -> number
-      weight: Number(v.weight),
-      dimension: v.dimension,
-      status: v.status,
-      flag: v.flag,
-      start: v.voucher_start,
-      end: v.voucher_end,
-      created_at: v.created_at,
-      updated_at: v.updated_at,
-      status_label:
+    const vouchers = rows.map((v) => {
+      const price = v.price != null ? Number(v.price) : null;
+      const weight = v.weight != null ? Number(v.weight) : null;
+      const status_label =
         v.flag === 0 || (v.voucher_end && v.voucher_end < now)
           ? "Archived"
           : v.status === 0
           ? "Unlisted"
           : v.voucher_start && v.voucher_start > now
           ? "Scheduled"
-          : "Published",
-    }));
+          : "Published";
+
+      return {
+        id: v.id,
+        code: v.code_voucher,
+        title: v.title,
+        description: v.description,
+        vendor_id: v.vendor_id,
+        category_voucher_id: v.category_voucher_id,
+        inventory: v.inventory,
+        price,
+        weight,
+        dimension: v.dimension,
+        status: v.status,
+        flag: v.flag,
+        start: v.voucher_start,
+        end: v.voucher_end,
+        created_at: v.created_at,
+        updated_at: v.updated_at,
+        status_label,
+      };
+    });
 
     return NextResponse.json(
       {
@@ -169,12 +179,12 @@ export async function GET(req) {
         pagination: { total, limit, offset },
         vouchers,
       },
-      { headers: corsHeaders }
+      { headers: cors }
     );
   } catch (err) {
-    return new NextResponse(
-      JSON.stringify({ error: err?.message ?? "Internal server error" }),
-      { status: 500, headers: corsHeaders }
-    );
+    return new NextResponse(JSON.stringify({ error: err?.message ?? "Internal server error" }), {
+      status: 500,
+      headers: cors,
+    });
   }
 }
