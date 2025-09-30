@@ -89,7 +89,7 @@ export async function POST(req) {
           name,
           email,
           password_hash,
-          role_id: VENDOR_ROLE_ID,
+          role_id: 5,
           status: 1,
         },
         select: { id: true, name: true, email: true, role_id: true, status: true },
