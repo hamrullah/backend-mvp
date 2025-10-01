@@ -42,7 +42,7 @@ function getTokenFromRequest(req) {
 }
 
 // Helpers to normalize role from token
-const ROLE_BY_ID = { 1: "MEMBER", 2: "VENDOR", 3: "AFFILIATE", 4: "ADMIN" };
+const ROLE_BY_ID = { 7: "MEMBER", 5: "VENDOR", 6: "AFFILIATE", 4: "ADMIN" };
 function normalizeRole(claims) {
   const roleFromClaim = claims?.role
     ? String(claims.role).toUpperCase()
