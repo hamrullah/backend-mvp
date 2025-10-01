@@ -18,11 +18,10 @@ function buildCors(req) {
     "Access-Control-Allow-Methods": "GET,OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type, Authorization",
     "Access-Control-Max-Age": "86400",
-    "Vary": "Origin",
+    Vary: "Origin",
     "Content-Type": "application/json",
   });
 
-  // hanya aktifkan credentials bila bukan "*"
   if (allow !== "*") headers.set("Access-Control-Allow-Credentials", "true");
   return headers;
 }
@@ -42,6 +41,25 @@ function getTokenFromRequest(req) {
   return null;
 }
 
+// Helpers to normalize role from token
+const ROLE_BY_ID = { 1: "MEMBER", 2: "VENDOR", 3: "AFFILIATE", 4: "ADMIN" };
+function normalizeRole(claims) {
+  const roleFromClaim = claims?.role
+    ? String(claims.role).toUpperCase()
+    : null;
+  const roleFromId = claims?.role_id ? ROLE_BY_ID[Number(claims.role_id)] : null;
+  return (roleFromClaim || roleFromId || "GUEST").toUpperCase();
+}
+function normalizeUserId(claims) {
+  // support a few common shapes
+  return Number(
+    claims?.id ??
+    claims?.userId ??
+    claims?.user_id ??
+    claims?.user?.id
+  );
+}
+
 // ---------- LIST VENDOR ----------
 export async function GET(req) {
   const cors = buildCors(req);
@@ -51,11 +69,16 @@ export async function GET(req) {
     if (!token) {
       return new NextResponse(JSON.stringify({ error: "Unauthorized" }), { status: 401, headers: cors });
     }
+
+    let claims;
     try {
-      jwt.verify(token, process.env.NEXTAUTH_SECRET);
+      claims = jwt.verify(token, process.env.NEXTAUTH_SECRET);
     } catch {
       return new NextResponse(JSON.stringify({ error: "Invalid token" }), { status: 401, headers: cors });
     }
+
+    const role = normalizeRole(claims);
+    const requesterUserId = normalizeUserId(claims);
 
     // Query params
     const { searchParams } = new URL(req.url);
@@ -79,7 +102,7 @@ export async function GET(req) {
     const sortBy = allowSortBy.has(sortByRaw) ? sortByRaw : "created_at";
     const sortDir = (searchParams.get("sortDir") || "desc").toLowerCase() === "asc" ? "asc" : "desc";
 
-    // where
+    // WHERE base (filters)
     const where = {};
     if (q) {
       where.OR = [
@@ -92,6 +115,23 @@ export async function GET(req) {
     }
     if (statusParam !== null && statusParam !== undefined && statusParam !== "") {
       where.status = Number(statusParam);
+    }
+
+    // ---------- Role-based scope ----------
+    if (role === "ADMIN") {
+      // no extra restriction
+    } else if (role === "VENDOR") {
+      // vendor can only see its own vendor row by user_id
+      if (!Number.isFinite(requesterUserId)) {
+        return new NextResponse(JSON.stringify({ error: "Forbidden: invalid user id in token" }), {
+          status: 403,
+          headers: cors,
+        });
+      }
+      where.user_id = requesterUserId;
+    } else {
+      // other roles are not allowed to list vendors
+      return new NextResponse(JSON.stringify({ error: "Forbidden" }), { status: 403, headers: cors });
     }
 
     // Query
@@ -135,7 +175,7 @@ export async function GET(req) {
         message: "Vendor list",
         pagination: { total, limit, offset },
         vendors,
-        // bentuk tambahan agar seragam dengan komponen lain:
+        // extras for UI compatibility:
         page: Math.floor(offset / (limit || 1)) + 1,
         pageSize: limit,
         total,
