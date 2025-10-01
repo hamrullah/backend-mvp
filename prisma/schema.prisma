@@ -184,14 +184,19 @@ model ms_vouchers {
   created_by          Int?
   updated_by          Int?
 
-  vendor     ms_vendor           @relation(fields: [vendor_id], references: [id])
-  category   category_vouchers   @relation(fields: [category_voucher_id], references: [id])
+  // NEW
+  monthly_usage_limit Int       @default(0)
+
+  vendor     ms_vendor         @relation(fields: [vendor_id], references: [id])
+  category   category_vouchers @relation(fields: [category_voucher_id], references: [id])
   images     ms_vouchers_image[]
   orderItems trx_orders_detail[]
 
   @@index([vendor_id])
   @@index([category_voucher_id])
 }
+
+
 
 model ms_vouchers_image {
   id         Int      @id @default(autoincrement())
