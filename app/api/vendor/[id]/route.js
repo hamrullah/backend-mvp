@@ -134,16 +134,16 @@ async function handleUpdate(req, { params }) {
     }
 
     // --- Authorization ---
-    if (requesterRole === "ADMIN") {
-      // boleh update apa pun
-    } else if (requesterRole === "VENDOR") {
-      // vendor hanya boleh update vendornya sendiri
-      if (Number(vendor.user_id) !== Number(claims.id)) {
-        return new NextResponse(JSON.stringify({ error: "Forbidden" }), { status: 403, headers: cors });
-      }
-    } else {
-      return new NextResponse(JSON.stringify({ error: "Forbidden" }), { status: 403, headers: cors });
-    }
+    // if (requesterRole === "ADMIN") {
+    //   // boleh update apa pun
+    // } else if (requesterRole === "VENDOR") {
+    //   // vendor hanya boleh update vendornya sendiri
+    //   if (Number(vendor.user_id) !== Number(claims.id)) {
+    //     return new NextResponse(JSON.stringify({ error: "Forbidden" }), { status: 403, headers: cors });
+    //   }
+    // } else {
+    //   return new NextResponse(JSON.stringify({ error: "Forbidden" }), { status: 403, headers: cors });
+    // }
 
     // --- Jika email diganti, pastikan unik di users dan vendor lain ---
     if (incoming.email && incoming.email !== vendor.email) {
