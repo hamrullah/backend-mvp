@@ -246,7 +246,7 @@ export default function ExploreOffersPage() {
 
   return (
     <div className="flex min-h-screen flex-col bg-white text-gray-900">
-      <Navbar />
+      {/* <Navbar  /> */}
       <main className="mx-auto max-w-7xl flex-1 px-4 pb-16 pt-6 sm:px-6 lg:px-8">
         <Banner />
         <Filters category={category} setCategory={setCategory} min={min} max={max} setMin={setMin} setMax={setMax} />

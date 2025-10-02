@@ -3,7 +3,7 @@ import { useEffect, useState } from "react";
 import { Menu, X, LogIn, UserPlus } from "lucide-react";
 import Link from "next/link";
 
-export default function Navbar({ onOpenLogin, onOpenSignup }) {
+export default function Navbar({ onOpenLogin, onOpenSignup }: { onOpenLogin: () => void; onOpenSignup: () => void; }) {
   const [open, setOpen] = useState(false);
   const [user, setUser] = useState(null);
 
@@ -51,7 +51,7 @@ export default function Navbar({ onOpenLogin, onOpenSignup }) {
           <div className="hidden md:flex items-center gap-3">
             {user ? (
               <>
-                <span className="text-sm text-gray-700">Hi, <b>{user.name}</b></span>
+                <span className="text-sm text-gray-700">Hi, <b></b></span>
                 <button onClick={logout} className="inline-flex items-center gap-2 rounded-xl border border-gray-200 px-4 py-2 text-sm font-medium hover:bg-gray-50">
                   Logout
                 </button>
