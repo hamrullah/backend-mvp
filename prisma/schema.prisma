@@ -262,7 +262,7 @@ model ms_voucher_redeem {
   voucher_id  Int
   user_id     Int
   vendor_id   Int
-  order_id    Int?         // idempotency key
+  order_id    Int?        
   source      String?
   device_info String?
   ip_address  String?

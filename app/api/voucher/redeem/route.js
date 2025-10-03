@@ -132,17 +132,19 @@ export async function GET(req) {
     }
 
     // text search: IMPORTANT → for 1:1 or n:1 relations use `is: { ... }`
-    if (q) {
-      AND.push({
-        OR: [
-          { order_id: { contains: q, mode: "insensitive" } },
-          { voucher: { is: { code_voucher: { contains: q, mode: "insensitive" } } } },
-          { voucher: { is: { title: { contains: q, mode: "insensitive" } } } },
-          { user: { is: { name: { contains: q, mode: "insensitive" } } } },
-          { user: { is: { email: { contains: q, mode: "insensitive" } } } },
-        ],
-      });
-    }
+//      if (q) {
+//   const qNum = Number(q);
+//    const byOrderId = Number.isInteger(qNum) ? [{ order_id: qNum }] : [];
+//    AND.push({
+//      OR: [
+//        ...byOrderId,
+//        { voucher: { is: { code_voucher: { contains: q, mode: "insensitive" } } } },
+//        { voucher: { is: { title: { contains: q, mode: "insensitive" } } } },
+//        { user:    { is: { name:  { contains: q, mode: "insensitive" } } } },
+//        { user:    { is: { email: { contains: q, mode: "insensitive" } } } },
+//      ],
+//    });
+//  }
 
     const where = AND.length ? { AND } : undefined;
 
@@ -159,7 +161,6 @@ export async function GET(req) {
           voucher_id: true,
           user_id: true,
           vendor_id: true,
-          order_id: true,
           source: true,
           device_info: true,
           ip_address: true,
@@ -208,15 +209,11 @@ export async function POST(req) {
     const raw = await req.json().catch(() => ({}));
     const voucherId = Number(raw?.voucher_id);
     //const orderId = raw?.order_id ?? raw?.["order_id "] ?? null; // tolerate trailing space
-    const orderIdRaw = raw?.order_id ?? raw?.["order_id "]; // support key typo "order_id "
- let orderId = null;
- if (orderIdRaw !== undefined && orderIdRaw !== null && orderIdRaw !== "") {
-   const n = Number(orderIdRaw);
-   if (!Number.isInteger(n)) {
-     return new NextResponse(JSON.stringify({ error: "order_id must be an integer" }), { status: 400, headers: cors });
-   }
-   orderId = n; // <-- Integer
- }
+  const  orderIdRaw = raw?.order_id ?? raw?.["order_id "]; // support key typo
+const orderId =
+   orderIdRaw === undefined || orderIdRaw === null || orderIdRaw === ""
+     ? null
+     : String(orderIdRaw); // <-- paksa String
     const source = raw?.source ? String(raw.source) : "web";
     const device_info = raw?.device_info ? String(raw.device_info) : null;
 
