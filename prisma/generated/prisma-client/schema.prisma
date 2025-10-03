@@ -11,22 +11,22 @@ datasource db {
 
 /// ===== Core / Users & Roles =====
 model users {
-  id            Int           @id @default(autoincrement())
+  id            Int                 @id @default(autoincrement())
   name          String
-  email         String        @unique
+  email         String              @unique
   emailVerified DateTime?
   image         String?
   password_hash String
   role_id       Int?
-  status        Int           @default(1)
-  created_at    DateTime      @default(now())
-  updated_at    DateTime      @updatedAt
-  role          ms_role?      @relation(fields: [role_id], references: [id])
+  status        Int                 @default(1)
+  created_at    DateTime            @default(now())
+  updated_at    DateTime            @updatedAt
+  role          ms_role?            @relation(fields: [role_id], references: [id])
   admin         ms_admin?
   member        ms_member?
   affiliate     ms_affiliate?
   vendor        ms_vendor?
-  redemptions     ms_voucher_redeem[]
+  redemptions   ms_voucher_redeem[]
 
   @@index([role_id])
 }
@@ -148,9 +148,9 @@ model ms_vendor {
   created_by  Int?
   updated_by  Int?
 
-  user     users?        @relation(fields: [user_id], references: [id])
-  vouchers ms_vouchers[]
-  redemptions     ms_voucher_redeem[]
+  user        users?              @relation(fields: [user_id], references: [id])
+  vouchers    ms_vouchers[]
+  redemptions ms_voucher_redeem[]
 }
 
 /// ===== Voucher Catalog =====
@@ -187,18 +187,15 @@ model ms_vouchers {
   updated_by          Int?
   monthly_usage_limit Int?      @default(3)
 
-  vendor     ms_vendor         @relation(fields: [vendor_id], references: [id])
-  category   category_vouchers @relation(fields: [category_voucher_id], references: [id])
-  images     ms_vouchers_image[]
-  orderItems trx_orders_detail[]
-  redemptions         ms_voucher_redeem[]
-
+  vendor      ms_vendor           @relation(fields: [vendor_id], references: [id])
+  category    category_vouchers   @relation(fields: [category_voucher_id], references: [id])
+  images      ms_vouchers_image[]
+  orderItems  trx_orders_detail[]
+  redemptions ms_voucher_redeem[]
 
   @@index([vendor_id])
   @@index([category_voucher_id])
 }
-
-
 
 model ms_vouchers_image {
   id         Int      @id @default(autoincrement())
@@ -258,19 +255,19 @@ model trx_orders_detail {
 }
 
 model ms_voucher_redeem {
-  id          Int       @id @default(autoincrement())
+  id          Int      @id @default(autoincrement())
   voucher_id  Int
   user_id     Int
   vendor_id   Int
-  order_id    Int?         // idempotency key
+  order_id    Int? // idempotency key
   source      String?
   device_info String?
   ip_address  String?
-  status      Int       @default(1)
+  status      Int      @default(1)
   note        String?
-  redeemed_at DateTime  @default(now())
-  created_at  DateTime  @default(now())
-  updated_at  DateTime  @updatedAt
+  redeemed_at DateTime @default(now())
+  created_at  DateTime @default(now())
+  updated_at  DateTime @updatedAt
 
   voucher ms_vouchers @relation(fields: [voucher_id], references: [id])
   user    users       @relation(fields: [user_id], references: [id])
@@ -281,7 +278,6 @@ model ms_voucher_redeem {
 
   // TETAPKAN untuk idempotency:
   @@unique([order_id])
-
   @@index([user_id])
   @@index([vendor_id])
   @@index([redeemed_at])
