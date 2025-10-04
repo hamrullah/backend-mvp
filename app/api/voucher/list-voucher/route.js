@@ -5,12 +5,13 @@ import jwt from "jsonwebtoken";
 
 // ===== CORS: reflect allowlist =====
 const ALLOWLIST = [
-  process.env.FRONTEND_ORIGIN,        // ex: https://frontend-mvp-phi.vercel.app
-  process.env.FRONTEND_ORIGIN_LOCAL,  // ex: http://localhost:3001
+  process.env.FRONTEND_ORIGIN,
+  process.env.FRONTEND_ORIGIN_LOCAL,
+  "http://localhost:3001",
 ].filter(Boolean);
 
 function buildCors(req) {
-  const origin = req.headers.get("origin");
+  const origin = req.headers.get("origin") || "";
   const allow = ALLOWLIST.includes(origin) ? origin : (ALLOWLIST[0] || "*");
   const headers = new Headers({
     "Access-Control-Allow-Origin": allow,
@@ -40,7 +41,6 @@ function getToken(req) {
   return null;
 }
 
-// Ambil info user dari token yang sudah diverifikasi
 function parseUserFromPayload(payload) {
   const userId =
     Number(payload?.id) ||
@@ -48,12 +48,13 @@ function parseUserFromPayload(payload) {
     Number(payload?.uid) ||
     Number(payload?.sub);
 
-  const roleName = (payload?.role || payload?.role_name || payload?.roleName || "").toString().toLowerCase();
+  const roleName = (payload?.role || payload?.role_name || payload?.roleName || "")
+    .toString()
+    .toLowerCase();
   const roleId = Number(payload?.role_id ?? payload?.roleId);
 
-  // fleksibel: admin jika role text "admin" ATAU role_id === 1
+  // fix: cek lowercase "admin"
   const isAdmin = roleName === "ADMIN" || roleId === 4;
-
   return { userId, roleName, roleId, isAdmin };
 }
 
@@ -96,7 +97,6 @@ export async function GET(req) {
 
     let payload;
     try {
-      // verifikasi & ambil payload
       payload = jwt.verify(token, process.env.NEXTAUTH_SECRET);
     } catch {
       return new NextResponse(JSON.stringify({ error: "Invalid token" }), {
@@ -118,48 +118,36 @@ export async function GET(req) {
     const limit = Math.min(50, Math.max(1, parseInt(url.searchParams.get("limit") || "10", 10)));
     const offset = Math.max(0, parseInt(url.searchParams.get("offset") || "0", 10));
     const q = (url.searchParams.get("q") || "").trim();
-    const statusLabel = url.searchParams.get("status"); // Published|Scheduled|Unlisted|Archived
-    const vendorIdParam = url.searchParams.get("vendor_id"); // optional (admin boleh pakai untuk filter)
+    const statusLabel = url.searchParams.get("status");
+    const vendorIdParam = url.searchParams.get("vendor_id");
 
     const now = new Date();
     const AND = [];
 
-    // search text
     if (q) {
       AND.push({
         OR: [
           { title: { contains: q, mode: "insensitive" } },
           { code_voucher: { contains: q, mode: "insensitive" } },
+          { description: { contains: q, mode: "insensitive" } },
         ],
       });
     }
 
-    // status label
     if (statusLabel) AND.push(labelToWhere(statusLabel, now));
 
-    /**
-     * ---- Role-based filtering ----
-     * - Admin: boleh semua; jika vendor_id query diberikan, terapkan sebagai filter.
-     * - Vendor: selalu dibatasi ke vendor yang terkait dengan user (ms_vendor.user_id = users.id).
-     *           Abaikan vendor_id dari query (demi keamanan) atau boleh izinkan jika sama — di sini kita abaikan saja.
-     */
+    // role-based vendor filter
     let effectiveVendorId = null;
-
     if (isAdmin) {
-      // Admin boleh memfilter secara opsional lewat vendor_id
       if (vendorIdParam) {
         const vid = Number(vendorIdParam);
-        if (!Number.isNaN(vid)) {
-          effectiveVendorId = vid;
-        }
+        if (!Number.isNaN(vid)) effectiveVendorId = vid;
       }
     } else {
-      // Vendor: cari vendor milik user ini
       const vendor = await prisma.ms_vendor.findFirst({
         where: { user_id: userId },
         select: { id: true },
       });
-
       if (!vendor) {
         return new NextResponse(JSON.stringify({ error: "Vendor record not found for this user" }), {
           status: 403,
@@ -168,46 +156,39 @@ export async function GET(req) {
       }
       effectiveVendorId = vendor.id;
     }
+    if (effectiveVendorId != null) AND.push({ vendor_id: effectiveVendorId });
 
-    if (effectiveVendorId != null) {
-      AND.push({ vendor_id: effectiveVendorId });
-    }
-
-    const where = AND.length ? { AND } : undefined;
-
-    // ⚠️ Pastikan nama model sesuai schema:
-    // - Jika model-nya `model ms_vouchers` -> prisma.ms_vouchers
-    // - Jika `model Voucher @@map("ms_vouchers")` -> prisma.voucher
-    const model = prisma.ms_vouchers;
+    // build query object, JANGAN kirim where kalau kosong
+    const query = {
+      orderBy: { voucher_start: "desc" },
+      skip: offset,
+      take: limit,
+      select: {
+        id: true,
+        code_voucher: true,
+        title: true,
+        description: true,
+        vendor_id: true,
+        category_voucher_id: true,
+        inventory: true,
+        price: true,
+        weight: true,
+        dimension: true,
+        status: true,
+        flag: true,
+        voucher_start: true,
+        voucher_end: true,
+        created_at: true,
+        updated_at: true,
+        // HAPUS monthly_usage_limit kalau belum ada di schema/client
+        // monthly_usage_limit: true,
+      },
+    };
+    if (AND.length) query.where = { AND };
 
     const [rows, total] = await Promise.all([
-      model.findMany({
-        where,
-        orderBy: { voucher_start: "desc" },
-        skip: offset,
-        take: limit,
-        select: {
-          id: true,
-          code_voucher: true,
-          title: true,
-          description: true,
-          vendor_id: true,
-          category_voucher_id: true,
-          inventory: true,
-          price: true,
-          weight: true,
-          dimension: true,
-          status: true,
-          flag: true,
-          voucher_start: true,
-          voucher_end: true,
-          created_at: true,
-          updated_at: true,
-          // jika kamu punya kolom ini, aktifkan:
-          // monthly_usage_limit: true,
-        },
-      }),
-      model.count({ where }),
+      prisma.ms_vouchers.findMany(query),
+      prisma.ms_vouchers.count(AND.length ? { where: { AND } } : {}),
     ]);
 
     const vouchers = rows.map((v) => {
@@ -240,17 +221,11 @@ export async function GET(req) {
         created_at: v.created_at,
         updated_at: v.updated_at,
         status_label,
-        // uncomment jika kamu select kolomnya di atas:
-        // monthly_usage_limit: v.monthly_usage_limit ?? null,
       };
     });
 
     return NextResponse.json(
-      {
-        message: "Voucher list",
-        pagination: { total, limit, offset },
-        vouchers,
-      },
+      { message: "Voucher list", pagination: { total, limit, offset }, vouchers },
       { headers: cors }
     );
   } catch (err) {
