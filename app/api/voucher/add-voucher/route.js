@@ -1,11 +1,13 @@
 // app/api/voucher/add/route.js
 import { NextResponse } from "next/server";
-import crypto from "crypto";
+import crypto, { randomUUID } from "crypto";
 import prisma from "@/lib/prisma";
 import jwt from "jsonwebtoken";
-import { randomUUID } from "crypto";
-import { put } from "@vercel/blob"; // ⬅️ Vercel Blob SDK
+import { put } from "@vercel/blob";
 
+export const runtime = "nodejs";
+
+/* ---------- CORS ---------- */
 const ALLOWLIST = [
   process.env.FRONTEND_ORIGIN,
   process.env.FRONTEND_ORIGIN_LOCAL,
@@ -32,6 +34,7 @@ export async function OPTIONS(req) {
   return new NextResponse(null, { status: 204, headers: buildCors(req) });
 }
 
+/* ---------- Helpers (JANGAN di-export) ---------- */
 function getToken(req) {
   const h = req.headers.get("authorization") || req.headers.get("Authorization");
   if (h && h.toLowerCase().startsWith("bearer ")) return h.slice(7);
@@ -52,24 +55,16 @@ const money = (v) => {
   return Number.isFinite(n) ? n.toFixed(2) : "0.00";
 };
 
-// Nyalakan ini (set env HAS_MONTHLY_LIMIT=1) kalau kolom sudah ada di DB & client sudah siap
-const HAS_MONTHLY_LIMIT = process.env.HAS_MONTHLY_LIMIT === "1";
-
-// Optional: batasi ukuran & jumlah file
-const MAX_FILES = 10;
-const MAX_SIZE = 5 * 1024 * 1024; // 5MB per file
-
-export function genDigits(n = 15) {
+// 15 digit random (boleh leading zero)
+function genDigits(n = 15) {
   const bytes = crypto.randomBytes(n);
   let out = "";
-  for (let i = 0; i < n; i++) {
-    out += (bytes[i] % 10).toString(); // 0..9
-  }
+  for (let i = 0; i < n; i++) out += (bytes[i] % 10).toString(); // 0..9
   return out;
 }
 
-/** Ensure unique against ms_vouchers.code_voucher (retry a few times) */
-export async function generateUniqueVoucherCode(len = 15, maxTry = 10) {
+// Pastikan unik terhadap kolom unik ms_vouchers.code_voucher
+async function generateUniqueVoucherCode(len = 15, maxTry = 10) {
   for (let i = 0; i < maxTry; i++) {
     const code = genDigits(len);
     const exists = await prisma.ms_vouchers.findUnique({
@@ -81,33 +76,35 @@ export async function generateUniqueVoucherCode(len = 15, maxTry = 10) {
   throw new Error("Failed to generate unique voucher code");
 }
 
+// Toggle kolom baru jika sudah migrate
+const HAS_MONTHLY_LIMIT = process.env.HAS_MONTHLY_LIMIT === "1";
+
+// Batas upload
+const MAX_FILES = 10;
+const MAX_SIZE = 5 * 1024 * 1024; // 5MB
+
+/* ---------- POST /api/voucher/add ---------- */
 export async function POST(req) {
   const cors = buildCors(req);
   try {
-    // --- Auth
+    // Auth
     const token = getToken(req);
     if (!token) {
-      return new NextResponse(JSON.stringify({ error: "Unauthorized" }), {
-        status: 401,
-        headers: cors,
-      });
+      return new NextResponse(JSON.stringify({ error: "Unauthorized" }), { status: 401, headers: cors });
     }
     try {
       jwt.verify(token, process.env.NEXTAUTH_SECRET);
     } catch {
-      return new NextResponse(JSON.stringify({ error: "Invalid token" }), {
-        status: 401,
-        headers: cors,
-      });
+      return new NextResponse(JSON.stringify({ error: "Invalid token" }), { status: 401, headers: cors });
     }
 
-    // --- Multipart required
+    // Wajib multipart
     const ct = (req.headers.get("content-type") || "").toLowerCase();
     if (!ct.includes("multipart/form-data")) {
-      return new NextResponse(
-        JSON.stringify({ error: "Content-Type must be multipart/form-data" }),
-        { status: 400, headers: cors }
-      );
+      return new NextResponse(JSON.stringify({ error: "Content-Type must be multipart/form-data" }), {
+        status: 400,
+        headers: cors,
+      });
     }
 
     const fd = await req.formData();
@@ -121,32 +118,27 @@ export async function POST(req) {
     const startAt = get("startAt");
     const endAt = get("endAt");
     const description = get("description") || "";
+    const monthly_usage_limit = asInt(get("monthly_usage_limit"), 0);
 
-    const monthlyLimitRaw = get("monthly_usage_limit");
-    const monthly_usage_limit = asInt(monthlyLimitRaw, 0);
+    if (!title) {
+      return new NextResponse(JSON.stringify({ error: "Title is required" }), { status: 400, headers: cors });
+    }
+    if (!vendor_id) {
+      return new NextResponse(JSON.stringify({ error: "vendor_id is required" }), { status: 400, headers: cors });
+    }
 
-    if (!title)
-      return new NextResponse(JSON.stringify({ error: "Title is required" }), {
-        status: 400,
-        headers: cors,
-      });
-    if (!vendor_id)
-      return new NextResponse(
-        JSON.stringify({ error: "vendor_id is required" }),
-        { status: 400, headers: cors }
-      );
+    // Generate kode voucher 15 digit (unik)
+    const code_voucher = await generateUniqueVoucherCode(15);
 
     const now = new Date();
-
-    // --- Create voucher
     const data = {
-      code_voucher: await generateUniqueVoucherCode(15),
+      code_voucher,
       vendor_id,
       category_voucher_id,
       title,
       description,
       inventory,
-      price, // Decimal => string
+      price, // Decimal -> string
       weight: "0.00",
       dimension: "",
       status: 1,
@@ -168,12 +160,12 @@ export async function POST(req) {
       voucher_start: true,
       voucher_end: true,
       created_at: true,
+      ...(HAS_MONTHLY_LIMIT ? { monthly_usage_limit: true } : {}),
     };
-    if (HAS_MONTHLY_LIMIT) select.monthly_usage_limit = true;
 
     const voucher = await prisma.ms_vouchers.create({ data, select });
 
-    // --- Upload images to Vercel Blob (optional)
+    // Upload multi image ke Vercel Blob
     const files = (fd.getAll("images") || []).filter(
       (f) => typeof f === "object" && f && "arrayBuffer" in f
     );
@@ -189,19 +181,17 @@ export async function POST(req) {
       const ext = (name.split(".").pop() || "png").toLowerCase();
       const key = `vouchers/${voucher.id}-${randomUUID()}.${ext}`;
 
-      // Upload ke Vercel Blob; hasilnya public URL
-      // Pastikan env BLOB_READ_WRITE_TOKEN tersedia (di Vercel atau local)
+      // Perlu env: BLOB_READ_WRITE_TOKEN (Vercel) atau token lokal
       const { url } = await put(key, file, {
         access: "public",
         addRandomSuffix: false,
         contentType: file.type || "application/octet-stream",
       });
 
-      // Simpan URL ke DB
       const rec = await prisma.ms_vouchers_image.create({
         data: {
           voucher_id: voucher.id,
-          image: url, // kolom 'image' kita isi dengan URL blob
+          image: url, // simpan URL public Blob
           flag: 1,
           created_at: new Date(),
         },
@@ -212,17 +202,13 @@ export async function POST(req) {
     }
 
     return new NextResponse(
-      JSON.stringify({
-        message: "Voucher created",
-        voucher,
-        images: uploaded, // daftar gambar yang berhasil diupload
-      }),
+      JSON.stringify({ message: "Voucher created", voucher, images: uploaded }),
       { status: 201, headers: cors }
     );
   } catch (err) {
-    return new NextResponse(
-      JSON.stringify({ error: err?.message || "Internal server error" }),
-      { status: 500, headers: cors }
-    );
+    return new NextResponse(JSON.stringify({ error: err?.message || "Internal server error" }), {
+      status: 500,
+      headers: cors,
+    });
   }
 }
