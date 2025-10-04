@@ -40,6 +40,23 @@ function getToken(req) {
   return null;
 }
 
+// Ambil info user dari token yang sudah diverifikasi
+function parseUserFromPayload(payload) {
+  const userId =
+    Number(payload?.id) ||
+    Number(payload?.userId) ||
+    Number(payload?.uid) ||
+    Number(payload?.sub);
+
+  const roleName = (payload?.role || payload?.role_name || payload?.roleName || "").toString().toLowerCase();
+  const roleId = Number(payload?.role_id ?? payload?.roleId);
+
+  // fleksibel: admin jika role text "admin" ATAU role_id === 1
+  const isAdmin = roleName === "ADMIN" || roleId === 4;
+
+  return { userId, roleName, roleId, isAdmin };
+}
+
 function labelToWhere(label, now) {
   const L = (label || "").toLowerCase();
   switch (L) {
@@ -76,10 +93,21 @@ export async function GET(req) {
         headers: cors,
       });
     }
+
+    let payload;
     try {
-      jwt.verify(token, process.env.NEXTAUTH_SECRET);
+      // verifikasi & ambil payload
+      payload = jwt.verify(token, process.env.NEXTAUTH_SECRET);
     } catch {
       return new NextResponse(JSON.stringify({ error: "Invalid token" }), {
+        status: 401,
+        headers: cors,
+      });
+    }
+
+    const { userId, isAdmin } = parseUserFromPayload(payload);
+    if (!userId) {
+      return new NextResponse(JSON.stringify({ error: "Invalid token payload (no user id)" }), {
         status: 401,
         headers: cors,
       });
@@ -91,10 +119,12 @@ export async function GET(req) {
     const offset = Math.max(0, parseInt(url.searchParams.get("offset") || "0", 10));
     const q = (url.searchParams.get("q") || "").trim();
     const statusLabel = url.searchParams.get("status"); // Published|Scheduled|Unlisted|Archived
-    const vendorId = url.searchParams.get("vendor_id"); // optional
+    const vendorIdParam = url.searchParams.get("vendor_id"); // optional (admin boleh pakai untuk filter)
 
     const now = new Date();
     const AND = [];
+
+    // search text
     if (q) {
       AND.push({
         OR: [
@@ -103,8 +133,46 @@ export async function GET(req) {
         ],
       });
     }
-    if (vendorId) AND.push({ vendor_id: Number(vendorId) });
+
+    // status label
     if (statusLabel) AND.push(labelToWhere(statusLabel, now));
+
+    /**
+     * ---- Role-based filtering ----
+     * - Admin: boleh semua; jika vendor_id query diberikan, terapkan sebagai filter.
+     * - Vendor: selalu dibatasi ke vendor yang terkait dengan user (ms_vendor.user_id = users.id).
+     *           Abaikan vendor_id dari query (demi keamanan) atau boleh izinkan jika sama — di sini kita abaikan saja.
+     */
+    let effectiveVendorId = null;
+
+    if (isAdmin) {
+      // Admin boleh memfilter secara opsional lewat vendor_id
+      if (vendorIdParam) {
+        const vid = Number(vendorIdParam);
+        if (!Number.isNaN(vid)) {
+          effectiveVendorId = vid;
+        }
+      }
+    } else {
+      // Vendor: cari vendor milik user ini
+      const vendor = await prisma.ms_vendor.findFirst({
+        where: { user_id: userId },
+        select: { id: true },
+      });
+
+      if (!vendor) {
+        return new NextResponse(JSON.stringify({ error: "Vendor record not found for this user" }), {
+          status: 403,
+          headers: cors,
+        });
+      }
+      effectiveVendorId = vendor.id;
+    }
+
+    if (effectiveVendorId != null) {
+      AND.push({ vendor_id: effectiveVendorId });
+    }
+
     const where = AND.length ? { AND } : undefined;
 
     // ⚠️ Pastikan nama model sesuai schema:
@@ -135,6 +203,8 @@ export async function GET(req) {
           voucher_end: true,
           created_at: true,
           updated_at: true,
+          // jika kamu punya kolom ini, aktifkan:
+          // monthly_usage_limit: true,
         },
       }),
       model.count({ where }),
@@ -170,6 +240,8 @@ export async function GET(req) {
         created_at: v.created_at,
         updated_at: v.updated_at,
         status_label,
+        // uncomment jika kamu select kolomnya di atas:
+        // monthly_usage_limit: v.monthly_usage_limit ?? null,
       };
     });
 
