@@ -204,7 +204,7 @@ export async function GET(req) {
           created_at: true,
           updated_at: true,
           // jika kamu punya kolom ini, aktifkan:
-           monthly_usage_limit: true,
+          // monthly_usage_limit: true,
         },
       }),
       model.count({ where }),
@@ -241,7 +241,7 @@ export async function GET(req) {
         updated_at: v.updated_at,
         status_label,
         // uncomment jika kamu select kolomnya di atas:
-         monthly_usage_limit: v.monthly_usage_limit ?? null,
+        // monthly_usage_limit: v.monthly_usage_limit ?? null,
       };
     });
 
