@@ -2,7 +2,7 @@
 import { NextResponse } from "next/server";
 import jwt from "jsonwebtoken";
 import prisma from "@/lib/prisma";
-
+export const runtime = 'nodejs';
 /* ---------- CORS ---------- */
 const ALLOWLIST = [
   process.env.FRONTEND_ORIGIN,
@@ -233,3 +233,4 @@ export async function GET(req) {
     );
   }
 }
+
